@@ -1,0 +1,12 @@
+{
+  "dataset_path": "C:\\Users\\Navya\\Downloads\\RETINAL-IQ-master\\RETINAL-IQ-master\\data",
+  "model": "efficientnetv2b3",
+  "current_epoch": 3,
+  "total_epochs": 5,
+  "batch_size": 16,
+  "last_accuracy": 0.18754863739013672,
+  "last_val_accuracy": 0.10256410390138626,
+  "test_accuracy": 0.10256410390138626,
+  "test_auc": 0.43859732151031494,
+  "status": "training"
+}
