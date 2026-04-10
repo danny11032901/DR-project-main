@@ -1,18 +1,13 @@
-services:
-  # PostgreSQL Database (Managed)
-  - type: pserv
-    name: retinaiq-postgres
-    runtime: postgres15
+databases:
+  - name: retinaiq-postgres
     plan: free
-    ipAllowList: []
-    postgresDatabaseName: retinaiq
-    postgresUsername: retinaiq_user
-    postgresVersion: "15"
+    databaseName: retinaiq
+    user: retinaiq_user
 
-  # Redis Cache & Message Broker (Managed)
-  - type: pserv
+services:
+  # Redis / Key Value
+  - type: keyvalue
     name: retinaiq-redis
-    runtime: redis7
     plan: free
     ipAllowList: []
 
@@ -22,18 +17,21 @@ services:
     runtime: docker
     plan: free
     region: oregon
-    docker:
-      file: ./backend/Dockerfile
-      context: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     healthCheckPath: /api/v1/health
+    disk:
+      name: ml-models
+      sizeGB: 10
+      mountPath: /app/ml_models
+    preDeployCommand: cd /app && python -m alembic upgrade head && python scripts/download_models.py
     envVars:
       - key: APP_ENV
         value: production
       - key: DEBUG
         value: "false"
       - key: DATABASE_URL
-        fromService:
-          type: pserv
+        fromDatabase:
           name: retinaiq-postgres
           property: connectionString
       - key: REDIS_URL
@@ -67,33 +65,26 @@ services:
         value: "40"
       - key: MAX_UPLOAD_SIZE_MB
         value: "20"
-    port: 8000
-    disk:
-      name: ml-models
-      size: 10
-      mountPath: /app/ml_models
-    preDeployCommand: cd /app && python -m alembic upgrade head && python scripts/download_models.py
-    depends_on:
-      - retinaiq-postgres
-      - retinaiq-redis
 
   # Celery Worker
   - type: worker
     name: retinaiq-celery-worker
     runtime: docker
     plan: free
-    docker:
-      file: ./backend/Dockerfile
-      context: ./backend
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    disk:
+      name: ml-models-worker
+      sizeGB: 10
+      mountPath: /app/ml_models
     envVars:
       - key: APP_ENV
         value: production
       - key: DEBUG
         value: "false"
       - key: DATABASE_URL
-        fromService:
-          type: pserv
+        fromDatabase:
           name: retinaiq-postgres
           property: connectionString
       - key: REDIS_URL
@@ -110,14 +101,6 @@ services:
         value: "false"
       - key: LOG_LEVEL
         value: INFO
-    disk:
-      name: ml-models-worker
-      size: 10
-      mountPath: /app/ml_models
-    depends_on:
-      - retinaiq-postgres
-      - retinaiq-redis
-      - retinaiq-backend
 
   # Frontend
   - type: web
@@ -125,14 +108,12 @@ services:
     runtime: docker
     plan: free
     region: oregon
-    docker:
-      file: ./frontend/Dockerfile
-      context: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /
     envVars:
       - key: VITE_API_URL
         fromService:
           type: web
           name: retinaiq-backend
           property: url
-    healthCheckPath: /
-    buildCommand: npm run build
