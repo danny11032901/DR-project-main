@@ -1,50 +1,31 @@
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (Managed)
   - type: pserv
     name: retinaiq-postgres
-    runtime: docker
-    plan: standard
-    env: docker
-    envVars:
-      - key: POSTGRES_DB
-        value: retinaiq
-      - key: POSTGRES_USER
-        value: retinaiq_user
-      - key: POSTGRES_PASSWORD
-        generateValue: true
-    disk:
-      name: pgdata
-      size: 10
-    dockerCommand: >
-      sh -c 'postgres -c max_connections=100'
-    healthCheck:
-      type: json
-      path: /
+    runtime: postgres15
+    plan: free
+    ipAllowList: []
+    postgresDatabaseName: retinaiq
+    postgresUsername: retinaiq_user
+    postgresVersion: "15"
 
-  # Redis Cache & Message Broker
+  # Redis Cache & Message Broker (Managed)
   - type: pserv
     name: retinaiq-redis
-    runtime: docker
-    plan: standard
-    env: docker
-    image: redis:7-alpine
-    disk:
-      name: redisdata
-      size: 5
-    dockerCommand: redis-server --appendonly yes
-    healthCheck:
-      type: json
-      path: /
+    runtime: redis7
+    plan: free
+    ipAllowList: []
 
   # Backend API Server
   - type: web
     name: retinaiq-backend
     runtime: docker
-    plan: standard
+    plan: free
     region: oregon
     docker:
       file: ./backend/Dockerfile
       context: ./backend
+    healthCheckPath: /api/v1/health
     envVars:
       - key: APP_ENV
         value: production
@@ -56,21 +37,15 @@ services:
           name: retinaiq-postgres
           property: connectionString
       - key: REDIS_URL
-        value: redis://retinaiq-redis:6379/0
+        value: redis://:@retinaiq-redis:6379
       - key: CELERY_BROKER_URL
-        value: redis://retinaiq-redis:6379/1
+        value: redis://:@retinaiq-redis:6379/1
       - key: CELERY_RESULT_BACKEND
-        value: redis://retinaiq-redis:6379/2
+        value: redis://:@retinaiq-redis:6379/2
       - key: STORAGE_BACKEND
-        value: s3
-      - key: AWS_S3_BUCKET
-        fromQuery: s3_bucket
-      - key: AWS_REGION
-        value: us-east-1
-      - key: AWS_ACCESS_KEY_ID
-        fromQuery: aws_access_key
-      - key: AWS_SECRET_ACCESS_KEY
-        fromQuery: aws_secret_key
+        value: local
+      - key: MINIO_BUCKET_NAME
+        value: retinaiq-images
       - key: FRONTEND_URL
         fromService:
           type: web
@@ -93,17 +68,11 @@ services:
       - key: MAX_UPLOAD_SIZE_MB
         value: "20"
     port: 8000
-    healthCheckPath: /api/v1/health
     disk:
       name: ml-models
-      size: 20
+      size: 10
       mountPath: /app/ml_models
-    envVarFiles:
-      - .env.render
-    preDeployCommand: >
-      cd /app && 
-      python -m alembic upgrade head &&
-      python scripts/download_models.py
+    preDeployCommand: cd /app && python -m alembic upgrade head && python scripts/download_models.py
     depends_on:
       - retinaiq-postgres
       - retinaiq-redis
@@ -112,7 +81,7 @@ services:
   - type: worker
     name: retinaiq-celery-worker
     runtime: docker
-    plan: standard
+    plan: free
     docker:
       file: ./backend/Dockerfile
       context: ./backend
@@ -128,26 +97,22 @@ services:
           name: retinaiq-postgres
           property: connectionString
       - key: REDIS_URL
-        value: redis://retinaiq-redis:6379/0
+        value: redis://:@retinaiq-redis:6379
       - key: CELERY_BROKER_URL
-        value: redis://retinaiq-redis:6379/1
+        value: redis://:@retinaiq-redis:6379/1
       - key: CELERY_RESULT_BACKEND
-        value: redis://retinaiq-redis:6379/2
+        value: redis://:@retinaiq-redis:6379/2
       - key: STORAGE_BACKEND
-        value: s3
-      - key: AWS_S3_BUCKET
-        fromQuery: s3_bucket
-      - key: AWS_REGION
-        value: us-east-1
-      - key: AWS_ACCESS_KEY_ID
-        fromQuery: aws_access_key
-      - key: AWS_SECRET_ACCESS_KEY
-        fromQuery: aws_secret_key
+        value: local
+      - key: MINIO_BUCKET_NAME
+        value: retinaiq-images
       - key: AUTO_TRAIN_IF_MISSING
         value: "false"
+      - key: LOG_LEVEL
+        value: INFO
     disk:
       name: ml-models-worker
-      size: 20
+      size: 10
       mountPath: /app/ml_models
     depends_on:
       - retinaiq-postgres
@@ -158,7 +123,7 @@ services:
   - type: web
     name: retinaiq-frontend
     runtime: docker
-    plan: standard
+    plan: free
     region: oregon
     docker:
       file: ./frontend/Dockerfile
@@ -169,7 +134,5 @@ services:
           type: web
           name: retinaiq-backend
           property: url
-    port: 80
-    routes:
-      - type: http
-        source: /
+    healthCheckPath: /
+    buildCommand: npm run build
