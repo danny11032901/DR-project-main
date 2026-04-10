@@ -20,11 +20,6 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /api/v1/health
-    disk:
-      name: ml-models
-      sizeGB: 10
-      mountPath: /app/ml_models
-    preDeployCommand: cd /app && python -m alembic upgrade head && python scripts/download_models.py
     envVars:
       - key: APP_ENV
         value: production
@@ -48,7 +43,7 @@ services:
         fromService:
           type: web
           name: retinaiq-frontend
-          property: url
+          property: hostport
       - key: SECRET_KEY
         generateValue: true
       - key: ALGORITHM
@@ -74,10 +69,6 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     dockerCommand: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
-    disk:
-      name: ml-models-worker
-      sizeGB: 10
-      mountPath: /app/ml_models
     envVars:
       - key: APP_ENV
         value: production
@@ -116,4 +107,4 @@ services:
         fromService:
           type: web
           name: retinaiq-backend
-          property: url
+          property: hostport
