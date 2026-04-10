@@ -61,38 +61,6 @@ services:
       - key: MAX_UPLOAD_SIZE_MB
         value: "20"
 
-  # Celery Worker
-  - type: worker
-    name: retinaiq-celery-worker
-    runtime: docker
-    plan: free
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    dockerCommand: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
-    envVars:
-      - key: APP_ENV
-        value: production
-      - key: DEBUG
-        value: "false"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: retinaiq-postgres
-          property: connectionString
-      - key: REDIS_URL
-        value: redis://:@retinaiq-redis:6379
-      - key: CELERY_BROKER_URL
-        value: redis://:@retinaiq-redis:6379/1
-      - key: CELERY_RESULT_BACKEND
-        value: redis://:@retinaiq-redis:6379/2
-      - key: STORAGE_BACKEND
-        value: local
-      - key: MINIO_BUCKET_NAME
-        value: retinaiq-images
-      - key: AUTO_TRAIN_IF_MISSING
-        value: "false"
-      - key: LOG_LEVEL
-        value: INFO
-
   # Frontend
   - type: web
     name: retinaiq-frontend
