@@ -22,6 +22,7 @@ class Prediction(Base):
     analyzed_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+    image_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
 
     original_image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     gradcam_overlay_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -34,6 +35,7 @@ class Prediction(Base):
     snr_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     composite_quality: Mapped[float | None] = mapped_column(Float, nullable=True)
     quality_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    quality_warning: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     preprocessing_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -45,6 +47,7 @@ class Prediction(Base):
     attention_regions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
 
     clinical_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    referral_guideline: Mapped[str | None] = mapped_column(Text, nullable=True)
     urgency_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
     follow_up_months: Mapped[float | None] = mapped_column(Float, nullable=True)
 

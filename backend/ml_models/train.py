@@ -6,6 +6,7 @@ import csv
 import json
 import random
 from pathlib import Path
+from typing import Callable
 
 import tensorflow as tf
 
@@ -30,6 +31,15 @@ def _load_samples(dataset_path: Path) -> list[tuple[str, int]]:
   images_dir = dataset_path / "train_images"
   if not images_dir.exists():
     images_dir = dataset_path / "images"
+
+  # Some datasets include a nested train_images folder inside train_images/
+  if images_dir.exists() and images_dir.is_dir():
+    files = list(images_dir.iterdir())
+    if len(files) == 1 and files[0].is_dir():
+      nested = files[0]
+      if any(nested.iterdir()):
+        images_dir = nested
+
   if not images_dir.exists():
     raise FileNotFoundError(
       "Could not find image folder. Expected train_images/ or images/ under dataset path."
@@ -82,7 +92,28 @@ def _stratified_split(
   return train, val, test
 
 
-def _build_dataset(samples: list[tuple[str, int]], batch_size: int, training: bool) -> tf.data.Dataset:
+MODEL_IMAGE_SIZE: dict[str, int] = {
+  "efficientnetv2b3": 300,
+  "efficientnetb0": 300,
+  "mobilenetv3": 300,
+  "densenet121": 300,
+}
+
+MODEL_PREPROCESSORS: dict[str, Callable[[tf.Tensor], tf.Tensor]] = {
+  "efficientnetv2b3": tf.keras.applications.efficientnet_v2.preprocess_input,
+  "efficientnetb0": tf.keras.applications.efficientnet.preprocess_input,
+  "mobilenetv3": tf.keras.applications.mobilenet_v3.preprocess_input,
+  "densenet121": tf.keras.applications.densenet.preprocess_input,
+}
+
+
+def _build_dataset(
+  samples: list[tuple[str, int]],
+  batch_size: int,
+  image_size: int,
+  preprocess_fn: Callable[[tf.Tensor], tf.Tensor],
+  training: bool,
+) -> tf.data.Dataset:
   """Build TensorFlow dataset pipeline with decode, resize, normalize, and optional augmentation."""
 
   paths = [s[0] for s in samples]
@@ -90,12 +121,13 @@ def _build_dataset(samples: list[tuple[str, int]], batch_size: int, training: bo
   ds = tf.data.Dataset.from_tensor_slices((paths, labels))
 
   def _decode(path: tf.Tensor, label: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-    """Decode arbitrary image file and prepare EfficientNet-compatible tensor."""
+    """Decode arbitrary image file and prepare backbone-compatible tensor."""
 
     img = tf.io.read_file(path)
     img = tf.io.decode_image(img, channels=3, expand_animations=False)
-    img = tf.image.resize(img, [300, 300])
-    img = tf.cast(img, tf.float32) / 255.0
+    img = tf.image.resize(img, [image_size, image_size])
+    img = tf.cast(img, tf.float32)
+    img = preprocess_fn(img)
     return img, tf.one_hot(tf.cast(label, tf.int32), depth=5)
 
   ds = ds.map(_decode, num_parallel_calls=tf.data.AUTOTUNE)
@@ -103,9 +135,11 @@ def _build_dataset(samples: list[tuple[str, int]], batch_size: int, training: bo
     augmenter = tf.keras.Sequential(
       [
         tf.keras.layers.RandomFlip("horizontal"),
-        tf.keras.layers.RandomRotation(0.08),
-        tf.keras.layers.RandomZoom(0.1),
-        tf.keras.layers.RandomContrast(0.1),
+        tf.keras.layers.RandomRotation(0.2),
+        tf.keras.layers.RandomZoom(0.15),
+        tf.keras.layers.RandomContrast(0.2),
+        tf.keras.layers.RandomBrightness(0.2),
+        tf.keras.layers.RandomTranslation(0.1, 0.1),
       ]
     )
     ds = ds.map(lambda x, y: (augmenter(x, training=True), y), num_parallel_calls=tf.data.AUTOTUNE)
@@ -114,8 +148,8 @@ def _build_dataset(samples: list[tuple[str, int]], batch_size: int, training: bo
   return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 
-def _build_model(model_name: str) -> tf.keras.Model:
-  """Construct selected backbone with RetinaIQ classification head."""
+def _build_model(model_name: str, image_size: int) -> tuple[tf.keras.Model, tf.keras.Model]:
+  """Construct selected backbone with RetinaIQ classification head and return model plus backbone."""
 
   backbones = {
     "efficientnetv2b3": tf.keras.applications.EfficientNetV2B3,
@@ -126,19 +160,19 @@ def _build_model(model_name: str) -> tf.keras.Model:
   if model_name not in backbones:
     raise ValueError(f"Unsupported model '{model_name}'. Choose from: {', '.join(backbones)}")
 
-  backbone = backbones[model_name](weights="imagenet", include_top=False, input_shape=(300, 300, 3))
+  backbone = backbones[model_name](weights="imagenet", include_top=False, input_shape=(image_size, image_size, 3))
   backbone.trainable = False
 
   x = tf.keras.layers.GlobalAveragePooling2D()(backbone.output)
   x = tf.keras.layers.BatchNormalization()(x)
   x = tf.keras.layers.Dense(512, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(1e-4))(x)
   x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Dropout(0.5)(x)
+  x = tf.keras.layers.Dropout(0.6)(x)
   x = tf.keras.layers.Dense(256, activation="relu", kernel_regularizer=tf.keras.regularizers.l2(1e-4))(x)
   x = tf.keras.layers.BatchNormalization()(x)
-  x = tf.keras.layers.Dropout(0.4)(x)
+  x = tf.keras.layers.Dropout(0.5)(x)
   x = tf.keras.layers.Dense(128, activation="relu")(x)
-  x = tf.keras.layers.Dropout(0.3)(x)
+  x = tf.keras.layers.Dropout(0.4)(x)
   out = tf.keras.layers.Dense(5, activation="softmax")(x)
   model = tf.keras.Model(inputs=backbone.input, outputs=out)
   model.compile(
@@ -146,7 +180,7 @@ def _build_model(model_name: str) -> tf.keras.Model:
     loss=tf.keras.losses.CategoricalCrossentropy(),
     metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
   )
-  return model
+  return model, backbone
 
 
 def _class_weights(train_samples: list[tuple[str, int]]) -> dict[int, float]:
@@ -160,6 +194,52 @@ def _class_weights(train_samples: list[tuple[str, int]]) -> dict[int, float]:
   for k, v in counts.items():
     weights[k] = 1.0 if v == 0 else (total / (5.0 * v))
   return weights
+
+
+class CosineAnnealingLR(tf.keras.callbacks.Callback):
+    """Cosine annealing learning rate scheduler for smooth LR decay."""
+    
+    def __init__(self, initial_lr: float, epochs: int):
+        super().__init__()
+        self.initial_lr = initial_lr
+        self.epochs = epochs
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        import math
+        # Cosine annealing formula
+        lr = self.initial_lr * (1 + math.cos(math.pi * epoch / self.epochs)) / 2
+        try:
+            self.model.optimizer.learning_rate.assign(lr)
+        except (AttributeError, TypeError):
+            # Fallback for different Keras versions
+            try:
+                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+            except:
+                pass  # Some optimizers don't support LR updates
+
+
+class EarlyStopAt50Callback(tf.keras.callbacks.Callback):
+    """Stop training at epoch 50 if validation accuracy plateaus (no improvement for 3 epochs)."""
+
+    def __init__(self, patience: int = 3):
+        super().__init__()
+        self.patience = patience
+        self.best_val_accuracy = 0.0
+        self.epochs_without_improvement = 0
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        current_val_accuracy = logs.get("val_accuracy", 0.0)
+
+        if current_val_accuracy > self.best_val_accuracy:
+            self.best_val_accuracy = current_val_accuracy
+            self.epochs_without_improvement = 0
+        else:
+            self.epochs_without_improvement += 1
+
+        if epoch >= 49 and self.epochs_without_improvement >= self.patience:  # epoch 50 = index 49
+            print(f"\nEarly stopping at epoch {epoch + 1}: No improvement in validation accuracy for {self.patience} epochs.")
+            self.model.stop_training = True
 
 
 class DashboardUpdateCallback(tf.keras.callbacks.Callback):
@@ -197,7 +277,12 @@ def main() -> None:
     parser.add_argument("--dataset_path", required=True)
     parser.add_argument("--model", default="efficientnetv2b3")
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--fine_tune_epochs", type=int, default=5)
+    parser.add_argument("--unfreeze_layers", type=int, default=25)
+    parser.add_argument("--batch_size", type=int, default=16)  # Optimized for gradient quality
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--fine_tune_learning_rate", type=float, default=1e-5)
+    parser.add_argument("--image_size", type=int, default=None)
     parser.add_argument("--output", default="./ml_models/retinaiq_efficientnetv2b3.weights.h5")
     args = parser.parse_args()
 
@@ -208,20 +293,51 @@ def main() -> None:
     samples = _load_samples(dataset_path)
     train_samples, val_samples, test_samples = _stratified_split(samples)
 
-    train_ds = _build_dataset(train_samples, batch_size=args.batch_size, training=True)
-    val_ds = _build_dataset(val_samples, batch_size=args.batch_size, training=False)
-    test_ds = _build_dataset(test_samples, batch_size=args.batch_size, training=False)
+    image_size = args.image_size or MODEL_IMAGE_SIZE[args.model]
+    preprocess_fn = MODEL_PREPROCESSORS[args.model]
 
-    model = _build_model(args.model)
+    train_ds = _build_dataset(
+      train_samples,
+      batch_size=args.batch_size,
+      image_size=image_size,
+      preprocess_fn=preprocess_fn,
+      training=True,
+    )
+    val_ds = _build_dataset(
+      val_samples,
+      batch_size=args.batch_size,
+      image_size=image_size,
+      preprocess_fn=preprocess_fn,
+      training=False,
+    )
+    test_ds = _build_dataset(
+      test_samples,
+      batch_size=args.batch_size,
+      image_size=image_size,
+      preprocess_fn=preprocess_fn,
+      training=False,
+    )
+
+    model, backbone = _build_model(args.model, image_size)
     class_weight = _class_weights(train_samples)
+
+    out_dir = Path(args.output).parent
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(monitor="val_auc", mode="max", patience=5, restore_best_weights=True),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2),
-        DashboardUpdateCallback(Path("./ml_models"), dataset_path, args)
+        EarlyStopAt50Callback(patience=3),
+        CosineAnnealingLR(initial_lr=args.learning_rate, epochs=args.epochs),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(Path(out_dir) / f"{Path(args.output).stem}_best.weights.h5"),
+            save_weights_only=True,
+            save_best_only=True,
+            monitor="val_auc",
+            mode="max",
+        ),
+        DashboardUpdateCallback(out_dir, dataset_path, args),
     ]
 
-    history = model.fit(
+    fit_history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=args.epochs,
@@ -229,6 +345,49 @@ def main() -> None:
         callbacks=callbacks,
         verbose=1,
     )
+
+    if args.fine_tune_epochs > 0:
+        # Progressive unfreezing: gradually unfreeze layers in stages
+        num_unfreeze_stages = 3
+        layers_per_stage = args.unfreeze_layers // num_unfreeze_stages
+        epochs_per_stage = args.fine_tune_epochs // num_unfreeze_stages
+        
+        for stage in range(num_unfreeze_stages):
+            # Calculate which layers to unfreeze for this stage
+            layers_to_unfreeze = layers_per_stage * (stage + 1)
+            unfreeze_from_idx = len(backbone.layers) - layers_to_unfreeze
+            
+            # Unfreeze layers gradually
+            for i, layer in enumerate(backbone.layers):
+                layer.trainable = i >= unfreeze_from_idx
+            
+            # Adjust learning rate: higher for earlier stages, lower for later
+            lr = args.fine_tune_learning_rate * (10 ** (2 - stage))
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+                loss=tf.keras.losses.CategoricalCrossentropy(),
+                metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
+            )
+            
+            print(f"\nFine-tuning stage {stage + 1}/{num_unfreeze_stages}: Unfreezing {layers_to_unfreeze} layers (LR={lr})")
+            
+            fine_tune_history = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=epochs_per_stage if stage < num_unfreeze_stages - 1 else args.fine_tune_epochs - (epochs_per_stage * stage),
+                class_weight=class_weight,
+                callbacks=callbacks,
+                verbose=1,
+            )
+            
+            if stage == 0:
+                combined_history = fit_history.history.copy()
+            combined_history = {
+                key: combined_history.get(key, []) + fine_tune_history.history.get(key, [])
+                for key in set(combined_history) | set(fine_tune_history.history)
+            }
+        
+        fit_history.history = combined_history
 
     test_metrics = model.evaluate(test_ds, verbose=0)
 
@@ -239,22 +398,24 @@ def main() -> None:
     out_dir = Path("./ml_models")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    history = {
+    run_history = {
       "dataset_path": str(dataset_path),
       "model": args.model,
       "epochs": args.epochs,
+      "fine_tune_epochs": args.fine_tune_epochs,
+      "unfreeze_layers": args.unfreeze_layers,
       "batch_size": args.batch_size,
       "train_samples": len(train_samples),
       "val_samples": len(val_samples),
       "test_samples": len(test_samples),
-      "history": history.history,
+      "history": fit_history.history,
       "test_loss": float(test_metrics[0]),
       "test_accuracy": float(test_metrics[1]),
       "test_auc": float(test_metrics[2]),
       "weights_output": str(output_path),
-      "status": "trained"
+      "status": "trained",
     }
-    (out_dir / "training_history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
+    (out_dir / "training_history.json").write_text(json.dumps(run_history, indent=2), encoding="utf-8")
     print(f"Training complete. Weights saved to: {output_path}")
 
 

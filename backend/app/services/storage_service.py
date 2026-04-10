@@ -36,6 +36,44 @@ class StorageService:
             content_type=content_type,
         )
 
+    def _download_bytes(self, object_name: str) -> bytes:
+        """Download stored artifact bytes from object storage."""
+
+        obj = self.client.get_object(bucket_name=self.bucket, object_name=object_name)
+        try:
+            return obj.read()
+        finally:
+            obj.close()
+            obj.release_conn()
+
+    def _guess_image_mime_type(self, payload: bytes) -> str:
+        """Infer the original image MIME type from the binary header."""
+
+        if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if payload.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if payload.startswith(b"II*\x00") or payload.startswith(b"MM\x00*"):
+            return "image/tiff"
+        return "application/octet-stream"
+
+    def fetch_prediction_artifacts(self, prediction_id: str) -> dict[str, str]:
+        """Load stored explainability artifacts for a completed prediction."""
+
+        prefix = f"predictions/{prediction_id}"
+        original_bytes = self._download_bytes(f"{prefix}/original.bin")
+        overlay_bytes = self._download_bytes(f"{prefix}/gradcam_overlay.png")
+        heatmap_bytes = self._download_bytes(f"{prefix}/gradcam_heatmap.png")
+        lime_bytes = self._download_bytes(f"{prefix}/lime.png")
+
+        original_mime = self._guess_image_mime_type(original_bytes)
+        return {
+            "overlay_b64": "data:image/png;base64," + base64.b64encode(overlay_bytes).decode(),
+            "heatmap_b64": "data:image/png;base64," + base64.b64encode(heatmap_bytes).decode(),
+            "lime_b64": "data:image/png;base64," + base64.b64encode(lime_bytes).decode(),
+            "original_b64": f"data:{original_mime};base64," + base64.b64encode(original_bytes).decode(),
+        }
+
     async def store_prediction_artifacts(
         self,
         image_hash: str,

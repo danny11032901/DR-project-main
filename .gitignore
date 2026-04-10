@@ -46,6 +46,7 @@ Thumbs.db
 data/*.csv
 data/test_images/
 data/train_images/
+data/val_images/
 data/processed/
 data/raw/
 models/trained/

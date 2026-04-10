@@ -6,6 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 import numpy as np
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db.audit_log import AuditLog
@@ -33,6 +34,61 @@ LABELS = {
 }
 
 
+async def _build_cached_prediction_response(
+    prediction: Prediction, storage: StorageService, user_id: str
+) -> PredictionResponse:
+    """Return a cached prediction response for an identical image hash."""
+
+    artifacts = storage.fetch_prediction_artifacts(str(prediction.id))
+    long_label, short_label = LABELS[prediction.dr_grade]
+
+    return PredictionResponse(
+        prediction_id=prediction.id,
+        patient_id=prediction.patient_id,
+        analyzed_by=str(prediction.analyzed_by) if prediction.analyzed_by else user_id,
+        timestamp=prediction.created_at,
+        model_used=prediction.model_used,
+        model_tier=prediction.model_tier,
+        image_quality=ImageQuality(
+            blur_score=prediction.blur_score or 0.0,
+            contrast_score=prediction.contrast_score or 0.0,
+            brightness_mean=prediction.brightness_mean or 0.0,
+            snr_score=prediction.snr_score or 0.0,
+            composite_score=prediction.composite_quality or 0.0,
+            quality_label=prediction.quality_label or "",
+            warning=prediction.quality_warning,
+        ),
+        preprocessing_applied=prediction.preprocessing_config or {},
+        dr_grade=prediction.dr_grade,
+        dr_label=long_label,
+        dr_label_short=short_label,
+        confidence=prediction.confidence,
+        class_probabilities=prediction.class_probabilities or {},
+        explainability=ExplainabilityPayload(
+            gradcam_overlay_b64=artifacts["overlay_b64"],
+            gradcam_heatmap_b64=artifacts["heatmap_b64"],
+            gradcam_original_b64=artifacts["original_b64"],
+            attention_regions=prediction.attention_regions or [],
+            lime_explanation_b64=artifacts["lime_b64"],
+            shap_available=False,
+        ),
+        clinical=ClinicalPayload(
+            recommendation=prediction.clinical_recommendation or "",
+            urgency=prediction.urgency_level or "",
+            referral_guideline=prediction.referral_guideline or "",
+            follow_up_months=prediction.follow_up_months or 0.0,
+            disclaimer="This output is AI-generated and must be reviewed by a qualified ophthalmologist before any clinical decision.",
+        ),
+        performance=PerformancePayload(
+            preprocessing_ms=prediction.preprocessing_ms or 0,
+            inference_ms=prediction.inference_ms or 0,
+            gradcam_ms=prediction.gradcam_ms or 0,
+            lime_ms=prediction.lime_ms or 0,
+            total_ms=prediction.total_ms or 0,
+        ),
+    )
+
+
 async def run_full_inference(
     image_bytes: bytes,
     patient_id: Optional[str],
@@ -44,6 +100,12 @@ async def run_full_inference(
     """Execute full analysis pipeline from bytes to explainable DR response payload."""
 
     total_start = time.perf_counter()
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    existing_prediction = await db.execute(select(Prediction).where(Prediction.image_hash == image_hash))
+    cached = existing_prediction.scalar_one_or_none()
+    if cached is not None:
+        return await _build_cached_prediction_response(cached, storage, user_id)
 
     preprocessor = AdaptivePreprocessor()
     quality_assessor = ImageQualityAssessor()
@@ -122,6 +184,7 @@ async def run_full_inference(
         id=prediction_id,
         patient_id=patient_uuid,
         analyzed_by=analyzed_uuid,
+        image_hash=image_hash,
         original_image_path=f"predictions/{prediction_id}/original.bin",
         gradcam_overlay_path=f"predictions/{prediction_id}/gradcam_overlay.png",
         gradcam_heatmap_path=f"predictions/{prediction_id}/gradcam_heatmap.png",
@@ -132,6 +195,7 @@ async def run_full_inference(
         snr_score=quality.snr_score,
         composite_quality=quality.composite_score,
         quality_label=quality.quality_label,
+        quality_warning=quality.warning,
         preprocessing_config={
             "clahe_clip_limit": prep_config.clahe_clip_limit,
             "clahe_grid_size": "8x8",
@@ -150,6 +214,7 @@ async def run_full_inference(
         attention_regions=list(grad_bundle["attention_regions"]),
         clinical_recommendation=str(recommendation["text"]),
         urgency_level=str(recommendation["urgency"]),
+        referral_guideline=str(recommendation["guideline"]),
         follow_up_months=float(recommendation["follow_up_months"]),
         preprocessing_ms=preprocessing_ms,
         inference_ms=inference_ms,

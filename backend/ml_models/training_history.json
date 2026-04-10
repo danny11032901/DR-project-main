@@ -1,12 +1,12 @@
 {
-  "dataset_path": "C:\\Users\\Navya\\Downloads\\RETINAL-IQ-master\\RETINAL-IQ-master\\data",
-  "model": "efficientnetv2b3",
-  "current_epoch": 3,
-  "total_epochs": 5,
+  "dataset_path": "C:\\Danish-Project\\project-main\\data",
+  "model": "mobilenetv3",
+  "current_epoch": 1,
+  "total_epochs": 100,
   "batch_size": 16,
-  "last_accuracy": 0.18754863739013672,
-  "last_val_accuracy": 0.10256410390138626,
-  "test_accuracy": 0.10256410390138626,
-  "test_auc": 0.43859732151031494,
+  "last_accuracy": 0.5833333134651184,
+  "last_val_accuracy": 0.7403188943862915,
+  "test_accuracy": 0.7403188943862915,
+  "test_auc": 0.9497402310371399,
   "status": "training"
 }
