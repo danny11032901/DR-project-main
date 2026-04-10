@@ -1,0 +1,175 @@
+services:
+  # PostgreSQL Database
+  - type: pserv
+    name: retinaiq-postgres
+    runtime: docker
+    plan: standard
+    env: docker
+    envVars:
+      - key: POSTGRES_DB
+        value: retinaiq
+      - key: POSTGRES_USER
+        value: retinaiq_user
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+    disk:
+      name: pgdata
+      size: 10
+    dockerCommand: >
+      sh -c 'postgres -c max_connections=100'
+    healthCheck:
+      type: json
+      path: /
+
+  # Redis Cache & Message Broker
+  - type: pserv
+    name: retinaiq-redis
+    runtime: docker
+    plan: standard
+    env: docker
+    image: redis:7-alpine
+    disk:
+      name: redisdata
+      size: 5
+    dockerCommand: redis-server --appendonly yes
+    healthCheck:
+      type: json
+      path: /
+
+  # Backend API Server
+  - type: web
+    name: retinaiq-backend
+    runtime: docker
+    plan: standard
+    region: oregon
+    docker:
+      file: ./backend/Dockerfile
+      context: ./backend
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: retinaiq-postgres
+          property: connectionString
+      - key: REDIS_URL
+        value: redis://retinaiq-redis:6379/0
+      - key: CELERY_BROKER_URL
+        value: redis://retinaiq-redis:6379/1
+      - key: CELERY_RESULT_BACKEND
+        value: redis://retinaiq-redis:6379/2
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: AWS_S3_BUCKET
+        fromQuery: s3_bucket
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        fromQuery: aws_access_key
+      - key: AWS_SECRET_ACCESS_KEY
+        fromQuery: aws_secret_key
+      - key: FRONTEND_URL
+        fromService:
+          type: web
+          name: retinaiq-frontend
+          property: url
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: AUTO_TRAIN_IF_MISSING
+        value: "false"
+      - key: IMAGE_QUALITY_THRESHOLD
+        value: "40"
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "20"
+    port: 8000
+    healthCheckPath: /api/v1/health
+    disk:
+      name: ml-models
+      size: 20
+      mountPath: /app/ml_models
+    envVarFiles:
+      - .env.render
+    preDeployCommand: >
+      cd /app && 
+      python -m alembic upgrade head &&
+      python scripts/download_models.py
+    depends_on:
+      - retinaiq-postgres
+      - retinaiq-redis
+
+  # Celery Worker
+  - type: worker
+    name: retinaiq-celery-worker
+    runtime: docker
+    plan: standard
+    docker:
+      file: ./backend/Dockerfile
+      context: ./backend
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: retinaiq-postgres
+          property: connectionString
+      - key: REDIS_URL
+        value: redis://retinaiq-redis:6379/0
+      - key: CELERY_BROKER_URL
+        value: redis://retinaiq-redis:6379/1
+      - key: CELERY_RESULT_BACKEND
+        value: redis://retinaiq-redis:6379/2
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: AWS_S3_BUCKET
+        fromQuery: s3_bucket
+      - key: AWS_REGION
+        value: us-east-1
+      - key: AWS_ACCESS_KEY_ID
+        fromQuery: aws_access_key
+      - key: AWS_SECRET_ACCESS_KEY
+        fromQuery: aws_secret_key
+      - key: AUTO_TRAIN_IF_MISSING
+        value: "false"
+    disk:
+      name: ml-models-worker
+      size: 20
+      mountPath: /app/ml_models
+    depends_on:
+      - retinaiq-postgres
+      - retinaiq-redis
+      - retinaiq-backend
+
+  # Frontend
+  - type: web
+    name: retinaiq-frontend
+    runtime: docker
+    plan: standard
+    region: oregon
+    docker:
+      file: ./frontend/Dockerfile
+      context: ./frontend
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: retinaiq-backend
+          property: url
+    port: 80
+    routes:
+      - type: http
+        source: /

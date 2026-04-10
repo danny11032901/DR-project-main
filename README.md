@@ -38,6 +38,27 @@ Explainable Deep Learning Framework for Automated Diabetic Retinopathy Screening
 - API Docs: http://localhost:8000/docs
 - MinIO Console: http://localhost:9001
 
+## Cloud Deployment (Render)
+
+Deploy to Render in minutes with zero configuration! 🚀
+
+- **Quick Start**: [RENDER_QUICKSTART.md](RENDER_QUICKSTART.md) - 5 minute setup
+- **Full Guide**: [RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md) - Complete documentation
+- **Deployment Config**: [render.yaml](render.yaml) - Infrastructure as code
+
+**One-click deployment:**
+1. Push to GitHub
+2. Connect repository to Render
+3. Click Deploy ✨
+
+All services automatically deployed:
+- ✅ Frontend (React + Nginx)
+- ✅ Backend (FastAPI)
+- ✅ PostgreSQL Database
+- ✅ Redis Cache
+- ✅ Celery Worker
+- ✅ ML Models Storage
+
 ## Prerequisites
 - Windows 10/11
 - Python 3.11 (required for TensorFlow compatibility)

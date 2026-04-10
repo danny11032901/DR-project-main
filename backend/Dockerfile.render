@@ -20,18 +20,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
-COPY requirements.txt ./
+COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install -r requirements.txt
 
-COPY app ./app
-COPY ml_models ./ml_models
-
+# Runtime stage
 FROM base AS production
 
 WORKDIR /app
 
-# Create directories for mounted volumes
+# Copy application code
+COPY app ./app
+COPY ml_models ./ml_models
+
+# Create directories for ML models and data
 RUN mkdir -p /app/ml_models /app/data
 
 # Health check

@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin123"
     minio_bucket_name: str = "retinaiq-images"
     minio_secure: bool = False
+    
+    # AWS S3 Configuration (for Render deployment)
+    aws_s3_bucket: str = "retinaiq-images"
+    aws_region: str = "us-east-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
 
     model_dir: str = "/app/ml_models"
     default_model_tier: int = 2
